@@ -68,32 +68,37 @@ jobs:
         echo "CLANG_PREFIX=$CLANG_PREFIX" >> $GITHUB_ENV
         echo "ARCH_FLAGS=$ARCH_FLAGS" >> $GITHUB_ENV
 
-    - name: Build Ninja as Shared Library
+- name: Build Ninja as Shared Library
       run: |
         export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang"
         export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++"
-        export CXXFLAGS="-D__ANDROID__ -Os -fPIC -ffunction-sections -fdata-sections -fvisibility=hidden ${{ env.ARCH_FLAGS }}"
+        export CXXFLAGS="-D__ANDROID__ -Os -fPIC -ffunction-sections -fdata-sections ${{ env.ARCH_FLAGS }}"
         export LDFLAGS="-Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384"
         
         echo "Building Ninja library for ${{ matrix.arch }}..."
         python3 configure.py --bootstrap
         
-        if [ ! -f ninja ]; then
-          echo "ERROR: Bootstrap failed - ninja binary not found"
+        echo "✓ Bootstrap successful"
+        echo ""
+        echo "Build artifacts:"
+        ls -lh build/
+        echo ""
+        
+        # Find the static library archive
+        if [ -f build/libninja.a ]; then
+          echo "Found libninja.a"
+          NINJA_LIB="build/libninja.a"
+        else
+          echo "ERROR: libninja.a not found"
           exit 1
         fi
         
-        echo "✓ Bootstrap successful"
-        
-        # Build as shared library instead of executable
-        echo "Creating libninja.so..."
-        
-        # Collect all object files
-        OBJS=$(find build -name "*.o" | tr '\n' ' ')
+        # Build as shared library
+        echo "Creating libninja.so from static library..."
         
         $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++ \
           -shared -o libninja.so \
-          $OBJS \
+          -Wl,--whole-archive $NINJA_LIB -Wl,--no-whole-archive \
           -Os -fPIC \
           -Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384 \
           -ldl -llog -latomic
@@ -107,8 +112,7 @@ jobs:
         # Verify exported symbols
         echo ""
         echo "Exported symbols:"
-        nm -D libninja.so | grep ninja_main || echo "WARNING: ninja_main not found"
-        nm -D libninja.so | grep ninja_set_command_executor || echo "WARNING: ninja_set_command_executor not found"
+        nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
