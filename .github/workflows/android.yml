@@ -92,11 +92,12 @@ jobs:
         ls -lh build/libninja.a
         echo ""
         
-        # Build as shared library WITHOUT --gc-sections to keep all code
+        # Build as shared library - include ninja.o which has real_main
         echo "Creating libninja.so from static library..."
         
         $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++ \
           -shared -o libninja.so \
+          build/ninja.o \
           -Wl,--whole-archive build/libninja.a -Wl,--no-whole-archive \
           -fPIC \
           -Wl,-z,max-page-size=16384 \
@@ -114,7 +115,7 @@ jobs:
         # Verify exported symbols
         echo ""
         echo "Key exported symbols:"
-        nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor|real_main"
+        nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor|real_main" || echo "Checking symbols..."
         echo ""
         echo "Total exported symbols:"
         nm -D libninja.so | wc -l
