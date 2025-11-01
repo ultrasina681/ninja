@@ -53,92 +53,7 @@ Subprocess::~Subprocess() {
     Finish();
 }
 
-#ifdef __ANDROID__
-// Callback function pointer for executing commands
-typedef int (*command_executor_func)(int argc, char** argv);
-static command_executor_func g_command_executor = nullptr;
-
-extern "C" __attribute__((visibility("default")))
-void ninja_set_command_executor(command_executor_func func) {
-  g_command_executor = func;
-}
-#endif
-
 bool Subprocess::Start(SubprocessSet* set, const string& command) {
-#ifdef __ANDROID__
-  // Android: use callback instead of spawning
-  if (!g_command_executor) {
-    Fatal("ninja_set_command_executor() not called - cannot execute commands");
-    return false;
-  }
-  
-  int subproc_stdout_fd = -1;
-  if (use_console_) {
-    fd_ = -1;
-  } else {
-    int output_pipe[2];
-    if (pipe(output_pipe) < 0)
-      Fatal("pipe: %s", strerror(errno));
-    fd_ = output_pipe[0];
-    subproc_stdout_fd = output_pipe[1];
-    SetCloseOnExec(fd_);
-  }
-  
-  // Parse command into argc/argv
-  // Simple parsing: split by spaces (ninja commands are already properly quoted)
-  std::vector<std::string> args;
-  std::vector<char*> argv_ptrs;
-  
-  // Add shell
-  args.push_back("/bin/sh");
-  args.push_back("-c");
-  args.push_back(command);
-  
-  for (auto& arg : args) {
-    argv_ptrs.push_back(const_cast<char*>(arg.c_str()));
-  }
-  argv_ptrs.push_back(nullptr);
-  
-  // Create fake pid (we don't have real processes)
-  static int fake_pid = 1000;
-  pid_ = fake_pid++;
-  
-  // Redirect stdout/stderr to pipe if needed
-  int saved_stdout = -1, saved_stderr = -1;
-  if (!use_console_) {
-    saved_stdout = dup(1);
-    saved_stderr = dup(2);
-    dup2(subproc_stdout_fd, 1);
-    dup2(subproc_stdout_fd, 2);
-    close(subproc_stdout_fd);
-  }
-  
-  // Execute command via callback
-  int exit_code = g_command_executor(argv_ptrs.size() - 1, argv_ptrs.data());
-  
-  // Restore stdout/stderr
-  if (!use_console_) {
-    dup2(saved_stdout, 1);
-    dup2(saved_stderr, 2);
-    close(saved_stdout);
-    close(saved_stderr);
-  }
-  
-  // Store exit status
-  exit_status_ = (exit_code == 0) ? ExitSuccess : ExitFailure;
-  
-  // Mark as finished immediately (no real process)
-  pid_ = -1;
-  
-  if (!use_console_ && fd_ >= 0) {
-    close(fd_);
-    fd_ = -1;
-  }
-  
-  return true;
-  
-#else
-  // Original posix_spawn code for non-Android
   int subproc_stdout_fd = -1;
   if (use_console_) {
     fd_ = -1;
@@ -149,9 +64,11 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
     fd_ = output_pipe[0];
     subproc_stdout_fd = output_pipe[1];
 #if !defined(USE_PPOLL)
+    // If available, we use ppoll in DoWork(); otherwise we use pselect
+    // and so must avoid overly-large FDs.
     if (fd_ >= static_cast<int>(FD_SETSIZE))
       Fatal("pipe: %s", strerror(EMFILE));
-#endif
+#endif  // !USE_PPOLL
     SetCloseOnExec(fd_);
   }
 
@@ -172,16 +89,27 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
     Fatal("posix_spawnattr_init: %s", strerror(err));
 
   short flags = 0;
+
   flags |= POSIX_SPAWN_SETSIGMASK;
   err = posix_spawnattr_setsigmask(&attr, &set->old_mask_);
   if (err != 0)
     Fatal("posix_spawnattr_setsigmask: %s", strerror(err));
+  // Signals which are set to be caught in the calling process image are set to
+  // default action in the new process image, so no explicit
+  // POSIX_SPAWN_SETSIGDEF parameter is needed.
 
   if (!use_console_) {
+    // Put the child in its own process group, so ctrl-c won't reach it.
     flags |= POSIX_SPAWN_SETPGROUP;
-    err = posix_spawn_file_actions_addopen(&action, 0, "/dev/null", O_RDONLY, 0);
-    if (err != 0)
+    // No need to posix_spawnattr_setpgroup(&attr, 0), it's the default.
+
+    // Open /dev/null over stdin.
+    err = posix_spawn_file_actions_addopen(&action, 0, "/dev/null", O_RDONLY,
+          0);
+    if (err != 0) {
       Fatal("posix_spawn_file_actions_addopen: %s", strerror(err));
+    }
+
     err = posix_spawn_file_actions_adddup2(&action, subproc_stdout_fd, 1);
     if (err != 0)
       Fatal("posix_spawn_file_actions_adddup2: %s", strerror(err));
@@ -217,8 +145,8 @@ bool Subprocess::Start(SubprocessSet* set, const string& command) {
   if (!use_console_)
     close(subproc_stdout_fd);
   return true;
-#endif
 }
+
 void Subprocess::OnPipeReady() {
   char buf[4 << 10];
   ssize_t len = read(fd_, buf, sizeof(buf));

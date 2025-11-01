@@ -1,0 +1,8 @@
+#include "ninja.h"
+#include <vector>
+#include <string>
+
+extern "C" __attribute__((visibility("default")))
+int ninja_main(int argc, char** argv) {
+  return RealMain(argc, argv);
+}
