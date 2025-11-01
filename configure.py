@@ -785,27 +785,37 @@ n.close()  # type: ignore # Item "Bootstrap" of "Writer | Bootstrap" has no attr
 print('wrote %s.' % BUILD_FILENAME)
 
 if options.bootstrap:
-    print('bootstrap complete.  rebuilding...')
-
-    rebuild_args = []
-
-    if platform.can_rebuild_in_place():
-        rebuild_args.append('./ninja')
+    print('bootstrap complete. rebuilding...')
+    
+    # Skip rebuild if cross-compiling for Android
+    import platform as host_platform
+    is_cross_compile = (
+        os.environ.get('CC', '').find('android') != -1 or
+        os.environ.get('CXX', '').find('android') != -1
+    )
+    
+    if is_cross_compile:
+        print('Cross-compiling detected - skipping rebuild step')
+        print('Build complete: ninja binary ready')
     else:
-        if platform.is_windows():
-            bootstrap_exe = 'ninja.bootstrap.exe'
-            final_exe = 'ninja.exe'
+        rebuild_args = [sys.executable, 'configure.py'] + configure_args
+        if platform.can_rebuild_in_place():
+            rebuild_args.append('./ninja')
         else:
-            bootstrap_exe = './ninja.bootstrap'
-            final_exe = './ninja'
+            if platform.is_windows():
+                bootstrap_exe = 'ninja.bootstrap.exe'
+                final_exe = 'ninja.exe'
+            else:
+                bootstrap_exe = './ninja.bootstrap'
+                final_exe = './ninja'
 
-        if os.path.exists(bootstrap_exe):
-            os.unlink(bootstrap_exe)
-        os.rename(final_exe, bootstrap_exe)
+            if os.path.exists(bootstrap_exe):
+                os.unlink(bootstrap_exe)
+            os.rename(final_exe, bootstrap_exe)
 
-        rebuild_args.append(bootstrap_exe)
+            rebuild_args.append(bootstrap_exe)
 
-    if options.verbose:
-        rebuild_args.append('-v')
+        if options.verbose:
+            rebuild_args.append('-v')
 
-    subprocess.check_call(rebuild_args)
+        subprocess.check_call(rebuild_args)
