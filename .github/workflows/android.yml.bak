@@ -6,7 +6,17 @@ on:
     branches: [ main, master ]
 
 jobs:
+  setup:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Setup NDK r29
+      uses: nttld/setup-ndk@v1
+      with:
+        ndk-version: r29
+        add-to-path: false
+
   build:
+    needs: setup
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -17,7 +27,7 @@ jobs:
     - name: Checkout Ninja Source
       uses: actions/checkout@v4
 
-    - name: Setup NDK r29
+    - name: Setup NDK r29 (from cache)
       uses: nttld/setup-ndk@v1
       with:
         ndk-version: r29
@@ -58,34 +68,53 @@ jobs:
         echo "CLANG_PREFIX=$CLANG_PREFIX" >> $GITHUB_ENV
         echo "ARCH_FLAGS=$ARCH_FLAGS" >> $GITHUB_ENV
 
-    - name: Build Ninja
+    - name: Build Ninja as Shared Library
       run: |
         export CC="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang"
         export CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++"
-        export CXXFLAGS="-D__ANDROID__ -Os -ffunction-sections -fdata-sections -fvisibility=hidden ${{ env.ARCH_FLAGS }}"
+        export CXXFLAGS="-D__ANDROID__ -Os -fPIC -ffunction-sections -fdata-sections -fvisibility=hidden ${{ env.ARCH_FLAGS }}"
         export LDFLAGS="-Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384"
         
-        echo "Building Ninja for ${{ matrix.arch }}..."
+        echo "Building Ninja library for ${{ matrix.arch }}..."
         python3 configure.py --bootstrap
         
         if [ ! -f ninja ]; then
-          echo "ERROR: Build failed - ninja binary not found"
+          echo "ERROR: Bootstrap failed - ninja binary not found"
           exit 1
         fi
         
-        echo "✓ Build successful"
-        ls -lh ninja
-        file ninja
+        echo "✓ Bootstrap successful"
+        
+        # Build as shared library instead of executable
+        echo "Creating libninja.so..."
+        
+        # Collect all object files
+        OBJS=$(find build -name "*.o" | tr '\n' ' ')
+        
+        $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++ \
+          -shared -o libninja.so \
+          $OBJS \
+          -Os -fPIC \
+          -Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384 \
+          -ldl -llog -latomic
+        
+        $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libninja.so
+        
+        echo "✓ Created libninja.so"
+        ls -lh libninja.so
+        file libninja.so
         
         # Verify exported symbols
-        nm -D ninja | grep ninja_main || echo "WARNING: ninja_main not found"
-        nm -D ninja | grep ninja_set_command_executor || echo "WARNING: ninja_set_command_executor not found"
+        echo ""
+        echo "Exported symbols:"
+        nm -D libninja.so | grep ninja_main || echo "WARNING: ninja_main not found"
+        nm -D libninja.so | grep ninja_set_command_executor || echo "WARNING: ninja_set_command_executor not found"
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ninja-android-${{ matrix.arch }}
-        path: ninja
+        path: libninja.so
         retention-days: 30
 
     - name: Build Summary
@@ -95,5 +124,5 @@ jobs:
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "Architecture: ${{ matrix.arch }}"
         echo "Min API:      21 (Android 5.0+)"
-        echo "Size:         $(ls -lh ninja | awk '{print $5}')"
+        echo "Size:         $(ls -lh libninja.so | awk '{print $5}')"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
