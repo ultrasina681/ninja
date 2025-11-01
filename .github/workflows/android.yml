@@ -88,34 +88,18 @@ jobs:
         ninja -v
         
         echo ""
-        echo "Build artifacts:"
-        ls -lh build/
-        find build -name "*.o" | head -10
-        echo ""
-        
-        # Verify libninja.a was created
-        if [ ! -f build/libninja.a ]; then
-          echo "ERROR: build/libninja.a not found"
-          exit 1
-        fi
-        
         echo "libninja.a size:"
         ls -lh build/libninja.a
         echo ""
         
-        # Extract and verify object files in archive
-        echo "Contents of libninja.a:"
-        ar t build/libninja.a | head -20
-        echo ""
-        
-        # Build as shared library
+        # Build as shared library WITHOUT --gc-sections to keep all code
         echo "Creating libninja.so from static library..."
         
         $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++ \
           -shared -o libninja.so \
           -Wl,--whole-archive build/libninja.a -Wl,--no-whole-archive \
           -fPIC \
-          -Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384 \
+          -Wl,-z,max-page-size=16384 \
           -ldl -llog -latomic
         
         echo "✓ Created libninja.so (before strip)"
@@ -129,10 +113,10 @@ jobs:
         
         # Verify exported symbols
         echo ""
-        echo "Exported symbols:"
-        nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor" || echo "WARNING: Expected symbols not found"
+        echo "Key exported symbols:"
+        nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor|real_main"
         echo ""
-        echo "All exported symbols count:"
+        echo "Total exported symbols:"
         nm -D libninja.so | wc -l
 
     - name: Upload Artifact

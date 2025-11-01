@@ -33,6 +33,12 @@ jobs:
         ndk-version: r29
         add-to-path: true
 
+    - name: Install Host Ninja
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ninja-build
+        ninja --version
+
     - name: Verify Patches
       run: |
         echo "=== Checking ninja_export.cc ==="
@@ -75,37 +81,49 @@ jobs:
         export CXXFLAGS="-D__ANDROID__ -Os -fPIC -ffunction-sections -fdata-sections ${{ env.ARCH_FLAGS }}"
         export LDFLAGS="-Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384"
         
-        echo "Building Ninja library for ${{ matrix.arch }}..."
-        python3 configure.py --bootstrap
+        echo "Configuring Ninja for ${{ matrix.arch }}..."
+        python3 configure.py
         
-        echo "✓ Bootstrap successful"
+        echo "Building with host ninja..."
+        ninja -v
+        
         echo ""
         echo "Build artifacts:"
         ls -lh build/
+        find build -name "*.o" | head -10
         echo ""
         
-        # Find the static library archive
-        if [ -f build/libninja.a ]; then
-          echo "Found libninja.a"
-          NINJA_LIB="build/libninja.a"
-        else
-          echo "ERROR: libninja.a not found"
+        # Verify libninja.a was created
+        if [ ! -f build/libninja.a ]; then
+          echo "ERROR: build/libninja.a not found"
           exit 1
         fi
+        
+        echo "libninja.a size:"
+        ls -lh build/libninja.a
+        echo ""
+        
+        # Extract and verify object files in archive
+        echo "Contents of libninja.a:"
+        ar t build/libninja.a | head -20
+        echo ""
         
         # Build as shared library
         echo "Creating libninja.so from static library..."
         
         $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ env.CLANG_PREFIX }}21-clang++ \
           -shared -o libninja.so \
-          -Wl,--whole-archive $NINJA_LIB -Wl,--no-whole-archive \
-          -Os -fPIC \
+          -Wl,--whole-archive build/libninja.a -Wl,--no-whole-archive \
+          -fPIC \
           -Wl,--gc-sections -Wl,--strip-all -Wl,-z,max-page-size=16384 \
           -ldl -llog -latomic
         
+        echo "✓ Created libninja.so (before strip)"
+        ls -lh libninja.so
+        
         $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip --strip-unneeded libninja.so
         
-        echo "✓ Created libninja.so"
+        echo "✓ Created libninja.so (after strip)"
         ls -lh libninja.so
         file libninja.so
         
@@ -113,6 +131,9 @@ jobs:
         echo ""
         echo "Exported symbols:"
         nm -D libninja.so | grep -E "ninja_main|ninja_set_command_executor" || echo "WARNING: Expected symbols not found"
+        echo ""
+        echo "All exported symbols count:"
+        nm -D libninja.so | wc -l
 
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
